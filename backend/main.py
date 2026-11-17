@@ -6,6 +6,7 @@ import joblib
 import os
 
 app = FastAPI(title="CiviQueue API")
+
 # AI Category to Department Mapping
 CATEGORY_DEPARTMENT_MAP = {
     "Streetlight": "Streetlight",

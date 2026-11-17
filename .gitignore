@@ -16,3 +16,11 @@ __pycache__/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Database backup and SSL certificate
+env_backup.txt
+*.pem
+*.sql
+
+# Backup files
+*_backup.py
