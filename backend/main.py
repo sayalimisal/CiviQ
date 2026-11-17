@@ -4,8 +4,131 @@ from pydantic import BaseModel, Field
 from typing import Optional
 import joblib
 import os
+import bcrypt
 
 app = FastAPI(title="CiviQueue API")
+class CitizenSignup(BaseModel):
+    name: str = Field(..., min_length=2, max_length=100)
+    email: str
+    password: str = Field(..., min_length=8)
+    phone: Optional[str] = None
+
+@app.post("/auth/signup")
+def citizen_signup(data: CitizenSignup):
+    email = data.email.strip().lower()
+
+    if "@" not in email:
+        raise HTTPException(status_code=400, detail="Invalid email")
+
+    if len(data.password.encode("utf-8")) > 72:
+        raise HTTPException(status_code=400, detail="Password too long")
+
+    connection = get_db_connection()
+
+    if connection is None:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute(
+            "SELECT id FROM users WHERE email = %s",
+            (email,)
+        )
+
+        if cursor.fetchone():
+            raise HTTPException(status_code=409, detail="Email already registered")
+
+        password_hash = bcrypt.hashpw(
+            data.password.encode("utf-8"),
+            bcrypt.gensalt()
+        ).decode("utf-8")
+
+        cursor.execute(
+            """INSERT INTO users
+            (name, email, password_hash, phone, role, department_id, is_active)
+            VALUES (%s, %s, %s, %s, 'CITIZEN', NULL, 1)""",
+            (data.name.strip(), email, password_hash, data.phone)
+        )
+
+        connection.commit()
+
+        return {
+            "message": "Citizen registered successfully",
+            "citizen_id": cursor.lastrowid,
+            "name": data.name.strip(),
+            "email": email,
+            "role": "CITIZEN"
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        connection.rollback()
+        print("Signup error:", error)
+        raise HTTPException(status_code=500, detail="Signup failed")
+
+    finally:
+        cursor.close()
+        connection.close()
+
+class CitizenLogin(BaseModel):
+    email: str
+    password: str = Field(..., min_length=8)
+
+@app.post("/auth/login")
+def citizen_login(data: CitizenLogin):
+    email = data.email.strip().lower()
+
+    connection = get_db_connection()
+
+    if connection is None:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+
+    cursor = connection.cursor(dictionary=True)
+
+    try:
+        cursor.execute(
+            """SELECT id, name, email, password_hash, role, is_active
+               FROM users WHERE email = %s""",
+            (email,)
+        )
+
+        user = cursor.fetchone()
+
+        if not user or user["role"] != "CITIZEN":
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+
+        if not user["is_active"]:
+            raise HTTPException(status_code=403, detail="Account is inactive")
+
+        if not bcrypt.checkpw(
+            data.password.encode("utf-8"),
+            user["password_hash"].encode("utf-8")
+        ):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+
+        return {
+            "message": "Login successful",
+            "citizen_id": user["id"],
+            "name": user["name"],
+            "email": user["email"],
+            "role": user["role"]
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        print("Login error:", error)
+        raise HTTPException(status_code=500, detail="Login failed")
+
+    finally:
+        cursor.close()
+        connection.close()
+    
+
 
 # AI Category to Department Mapping
 CATEGORY_DEPARTMENT_MAP = {
@@ -51,7 +174,7 @@ class ComplaintCreate(BaseModel):
 
     priority: str = Field(default="MEDIUM", pattern="^(LOW|MEDIUM|HIGH|CRITICAL)$")
 
-@app.get("/complaints")
+@app.get("/")
 def home():
     return {
         "message": "CiviQueue Backend is running!",
@@ -128,7 +251,7 @@ def db_health():
         connection.close()
 
 
-@app.get("/complaints")
+@app.get("/historic-complaints")
 def get_complaints(limit: int = 20):
     if limit < 1 or limit > 100:
         raise HTTPException(
@@ -337,6 +460,57 @@ def get_citizen_complaints(citizen_id: int):
         if cursor is not None:
             cursor.close()
 
+        connection.close()
+
+@app.get("/officer/complaints")
+def get_all_officer_complaints():
+    connection = get_db_connection()
+
+    if connection is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Database connection failed"
+        )
+
+    cursor = connection.cursor(dictionary=True)
+
+    try:
+        cursor.execute("""
+            SELECT
+                c.id,
+                c.title,
+                c.description,
+                c.category,
+                c.priority,
+                c.status,
+                c.address,
+                c.latitude,
+                c.longitude,
+                c.created_at,
+                c.department_id,
+                d.name AS department_name
+            FROM complaints c
+            LEFT JOIN departments d
+                ON c.department_id = d.id
+            ORDER BY c.created_at DESC
+        """)
+
+        complaints = cursor.fetchall()
+
+        return {
+            "total_complaints": len(complaints),
+            "complaints": complaints
+        }
+
+    except Exception as error:
+        print("Officer complaints error:", error)
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to fetch complaints"
+        )
+
+    finally:
+        cursor.close()
         connection.close()
 
 
